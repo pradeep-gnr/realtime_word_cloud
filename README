@@ -3,8 +3,8 @@ Real Time Word Cloud
 How to Run/
 
 1) Redis-server must be running at port 6379
-	Run:
-		redis-server
+   Run:
+	redis-server
 
 2) Apache Kafka and ZooKeeper must be installed.
 	After installation. Run the following commands to start Zookeeper and Apache Kafka
@@ -19,12 +19,12 @@ How to Run/
 		SPARK_HOME='/usr/local/spark/'
 
 4) python2.7 needs to be installed. 
-	Run
-		pip install -r requirements.tx
-		cd libs
-		unzip nltk_data.zip -d ~/
-		cd ../
-		python run.py
+   Run
+	pip install -r requirements.txt
+	cd libs
+	unzip nltk_data.zip -d ~/
+	cd ../
+	python run.py
 
 5) Start the spark-daemon.
 	cd crawler
