@@ -1,0 +1,100 @@
+Real Time Word Cloud
+
+How to Run/
+
+1) Redis-server must be running at port 6379
+	Run:
+		redis-server
+
+2) Apache Kafka and ZooKeeper must be installed.
+	After installation. Run the following commands to start Zookeeper and Apache Kafka
+
+	bin/zookeeper-server-start.sh config/zookeeper.properties
+	bin/kafka-server-start.sh config/server.properties
+
+3) Apache Spark needs to be installed. 
+	Edit config.py and set
+		SPARK_HOME='LOCATION_OF_SPARK'
+	Currently it is set to
+		SPARK_HOME='/usr/local/spark/'
+
+4) python2.7 needs to be installed. 
+	Run
+		pip install -r requirements.tx
+		cd libs
+		unzip nltk_data.zip -d ~/
+		cd ../
+		python run.py
+
+5) Start the spark-daemon.
+	cd crawler
+	python spark_job.py
+
+6) In another terminal Start the App.
+	python run.py
+
+7) Now lets send some requests. 
+	Run 
+		sh  bin/simulateRequests.sh localhost 5000 url
+
+8) After some time open a browser and visit:
+	http://127.0.0.1:5000/get_word_cloud_data
+
+	You should see the word cloud terms as a json dump.
+
+
+Architecture and Design Decisions. 
+
+Here is a basic overview of how the system would behave it receives requests.
+
+--> We have a Flask based webApp that has 2 major endpoints.
+	-- crawl_url(): Accepts a POST request taking in the product URL to be crawled.
+	-- get_word_cloud_data(): Returns a json dump of the top 100 most important words, which could be used to render a word-cloud in the FrontEnd.
+
+--> When the crawl_url endpoint receives urls - we first check if the URL received is a duplicate. Duplicate detection is done via Redis. I chose Redis as the standard key value store instead of using a hash-map via the app because it offers a lot of persistence features and also be replicated across multiple machines for better fault tolerance. 
+
+One of the concerns when we are building any crawler system is that we could potentially encounter a large number of URLS depending on the scale of the system. Naively adding each of these URLS as a key in Redis would easily cause the memory to grow with the number of keys in the database. 
+
+To address this in my design - I chose a HyperLog datastructure via Redis. It's a datastructure that is useful to perform approximate cardinality estimations within a set. As we add a new URL to the set - we can get a probabilistic estimate for how likely the cardinality of the set changed as we add a new element. 
+
+The HyperLog datastructure trades memory consumption for precision by making it possible to estimate cardinalities larger than 109 with a standard error of 2% using only 1.5 kilobytes of memory. 
+
+Also, It might not be that bad to re-crawl a URL.
+
+--> If the URL is a non-duplicate URL, a Kafka producer adds the URL to a pre-defined topic in a Kafka cluster. I chose Kafka because it offers a lot of really good features for building real time streaming applications. The messages are immutable and appended to each Kafka topic partition and Kafka does a really good job of replicating these topic partitions and good fault tolerance. This project however has a minimal Kafka integration just as a proof of concept compared to what we would use in a large Kafka cluster. 
+
+--> A spark streaming job is responsible for reading messages from Kafka, crawling these URL's and extracting important words from them.
+
+I chose spark-streaming because it has really good integration capabilities with Kafka and also how it helps us leverage the entire spark eco-system which could be really powerful especially if we begin to move on to more advanced analytics which might require the use of MlLib etc. 
+
+I wanted to make this system as real-time as possible. Spark-Streaming gives us the flexibility to do that. By setting really small batch durations - it would be possible to instantaneously process these messages in small batches. 
+
+In this project - the Spark example has minimal functionality. I also made use of Spark's checkpointing option for better durability. But Spark and its associated cluster computing framework is great for scaling for much higher loads. 
+
+	--> A consumer connects to Kafka and reads messages from the associated Kafka topic.
+	--> Each URL is crawled by the crawler and is transformed to a datastructure that contains all the most important words in the page.
+	--> I used NLTK to tokenize the contents of the page. Also, I threw out stopwords such as 'the', 'at' etc. For production systems, I would recommend using spacy (https://spacy.io/) which provides much faster implementations of standard NLP functions such as tokenization, parsing etc.
+
+	--> The crawler is relatively simple was implemented using a python library called BeautifulSoup which provides good functionality for HTML parsing. 
+
+	--> The final part of the SparkJob is that after aggregating the counts by the actual word from multiple URLS - the word counts are stored once again in REDIS. 
+
+	One of the challenges is that because we want the word-cloud rendering in real time, it would be very expensive to extract the K most important elements from a huge dictionary on every page load. 
+	We need to come up with a datastructure that is very performant for queries such as 
+
+	"Find the K most important items based on a certain score"
+
+	My original approach was to try to use one of the heavy hitter algorithms such as CountMinSketch or TopK
+
+	https://github.com/RedisLabsModules/countminsketch
+
+	But I did not find good python bindings for these modules and also these modules do not natively belong to Redis.
+
+	I decided to use a SortedSet datastructure in Redis. Adding an element into the sorted set os O(log N) where N is the number of elements. Also, fetching the top K elements had a time complexity of O(log N + K). 
+
+	One weakness of this approach is that as we encounter a lot of unique words the memory footprint will grow linearly with each word. This might be okay if we only add unigrams. But if we add bigrams and trigrams this might be very memory expensive.
+
+	Also the word-clouds and duplicates are stored in separate databases in redis.
+
+--> The get_word_cloud_data() is pretty simple. It queries redis and fetches the top 100 most frequent words and returns it in a json format
+
